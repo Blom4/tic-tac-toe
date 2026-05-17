@@ -1,0 +1,6 @@
+[build.tailwind]
+version = "3"
+
+[serve]
+port = 8080
+open = true
