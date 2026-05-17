@@ -56,10 +56,6 @@ impl Board {
         &self.cells
     }
 
-    pub fn get(&self, index: usize) -> Option<Player> {
-        self.cells.get(index).copied().flatten()
-    }
-
     pub fn set(&mut self, index: usize, player: Player) -> bool {
         if index >= 9 || self.cells[index].is_some() {
             return false;
@@ -243,14 +239,33 @@ pub struct GameState {
 
 impl GameState {
     pub fn new() -> Self {
+        let (x_wins, o_wins, draws) = Self::load_from_storage().unwrap_or((0, 0, 0));
         Self {
             board: Board::new(),
             current_player: Player::X,
             mode: GameMode::TwoPlayer,
             difficulty: Difficulty::Hard,
-            x_wins: 0,
-            o_wins: 0,
-            draws: 0,
+            x_wins,
+            o_wins,
+            draws,
+        }
+    }
+
+    fn load_from_storage() -> Option<(u32, u32, u32)> {
+        let window = web_sys::window()?;
+        let storage = window.local_storage().ok().flatten()?;
+        let data = storage.get_item("tictactoe_scores").ok().flatten()?;
+        let parsed: (u32, u32, u32) = serde_json::from_str(&data).ok()?;
+        Some(parsed)
+    }
+
+    fn save_to_storage(&self) {
+        if let Some(window) = web_sys::window() {
+            if let Some(storage) = window.local_storage().ok().flatten() {
+                if let Ok(data) = serde_json::to_string(&(self.x_wins, self.o_wins, self.draws)) {
+                    let _ = storage.set_item("tictactoe_scores", &data);
+                }
+            }
         }
     }
 
@@ -276,10 +291,12 @@ impl GameState {
                 Player::X => self.x_wins += 1,
                 Player::O => self.o_wins += 1,
             }
+            self.save_to_storage();
             return true;
         }
         if self.board.is_full() {
             self.draws += 1;
+            self.save_to_storage();
             return true;
         }
         self.current_player = self.current_player.other();
@@ -290,8 +307,10 @@ impl GameState {
                     Player::X => self.x_wins += 1,
                     Player::O => self.o_wins += 1,
                 }
+                self.save_to_storage();
             } else if self.board.is_full() {
                 self.draws += 1;
+                self.save_to_storage();
             }
             self.current_player = Player::X;
         }
@@ -343,6 +362,7 @@ impl GameState {
         self.x_wins = 0;
         self.o_wins = 0;
         self.draws = 0;
+        self.save_to_storage();
         self.reset();
     }
 }
