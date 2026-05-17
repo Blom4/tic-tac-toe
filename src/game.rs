@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Player {
     X,
     O,
@@ -47,7 +47,7 @@ impl Board {
     pub fn new() -> Self {
         Self {
             cells: [None; 9],
-            history: VecDeque::new(),
+            history: VecDeque::from([[None; 9]]),
             history_index: 0,
         }
     }
@@ -60,12 +60,12 @@ impl Board {
         if index >= 9 || self.cells[index].is_some() {
             return false;
         }
-        if self.history_index < self.history.len() {
-            self.history.truncate(self.history_index);
+        if self.history_index < self.history.len() - 1 {
+            self.history.truncate(self.history_index + 1);
         }
         self.cells[index] = Some(player);
         self.history.push_back(self.cells);
-        self.history_index = self.history.len();
+        self.history_index = self.history.len() - 1;
         true
     }
 
@@ -99,7 +99,7 @@ impl Board {
     }
 
     pub fn can_redo(&self) -> bool {
-        self.history_index < self.history.len()
+        self.history_index < self.history.len() - 1
     }
 
     pub fn undo(&mut self) -> bool {
@@ -319,11 +319,16 @@ impl GameState {
 
     pub fn undo(&mut self) -> bool {
         if self.mode == GameMode::VsAI {
-            let undone = self.board.undo();
-            if undone && self.current_player == Player::O {
-                let _ = self.board.undo();
+            let mut undone = false;
+            if self.board.can_undo() {
+                self.board.undo();
+                undone = true;
             }
-            if self.board.history_index > 0 {
+            if self.board.can_undo() {
+                self.board.undo();
+                undone = true;
+            }
+            if undone {
                 self.current_player = Player::X;
             }
             undone
@@ -338,9 +343,16 @@ impl GameState {
 
     pub fn redo(&mut self) -> bool {
         if self.mode == GameMode::VsAI {
-            let redone = self.board.redo();
-            if redone && self.current_player == Player::X {
-                let _ = self.board.redo();
+            let mut redone = false;
+            if self.board.can_redo() {
+                self.board.redo();
+                redone = true;
+            }
+            if self.board.can_redo() {
+                self.board.redo();
+                redone = true;
+            }
+            if redone {
                 self.current_player = Player::X;
             }
             redone
@@ -370,5 +382,158 @@ impl GameState {
 impl Default for GameState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_board_init_history() {
+        let b = Board::new();
+        assert!(b.cells.iter().all(|c| c.is_none()));
+        assert_eq!(b.history.len(), 1);
+        assert_eq!(b.history_index, 0);
+        assert!(!b.can_undo());
+        assert!(!b.can_redo());
+    }
+
+    #[test]
+    fn test_board_undo_redo_one_move() {
+        let mut b = Board::new();
+        assert!(b.set(0, Player::X));
+        assert_eq!(b.cells[0], Some(Player::X));
+        assert!(b.can_undo());
+        assert!(!b.can_redo());
+
+        assert!(b.undo());
+        assert!(b.cells.iter().all(|c| c.is_none()));
+        assert!(!b.can_undo());
+        assert!(b.can_redo());
+
+        assert!(b.redo());
+        assert_eq!(b.cells[0], Some(Player::X));
+        assert!(b.can_undo());
+        assert!(!b.can_redo());
+    }
+
+    #[test]
+    fn test_board_undo_redo_multiple_moves() {
+        let mut b = Board::new();
+        b.set(0, Player::X);
+        b.set(1, Player::O);
+        b.set(2, Player::X);
+        assert_eq!(b.history.len(), 4);
+        assert_eq!(b.history_index, 3);
+
+        b.undo();
+        assert_eq!(b.cells[0], Some(Player::X));
+        assert_eq!(b.cells[1], Some(Player::O));
+        assert_eq!(b.cells[2], None);
+        assert_eq!(b.history_index, 2);
+
+        b.undo();
+        assert_eq!(b.cells[0], Some(Player::X));
+        assert_eq!(b.cells[1], None);
+        assert_eq!(b.history_index, 1);
+
+        b.undo();
+        assert!(b.cells.iter().all(|c| c.is_none()));
+        assert_eq!(b.history_index, 0);
+        assert!(!b.can_undo());
+
+        b.redo();
+        assert_eq!(b.cells[0], Some(Player::X));
+        assert_eq!(b.history_index, 1);
+
+        b.redo();
+        assert_eq!(b.cells[0], Some(Player::X));
+        assert_eq!(b.cells[1], Some(Player::O));
+        assert_eq!(b.history_index, 2);
+
+        b.redo();
+        assert_eq!(b.cells[2], Some(Player::X));
+        assert_eq!(b.history_index, 3);
+        assert!(!b.can_redo());
+    }
+
+    #[test]
+    fn test_board_truncate_on_new_move() {
+        let mut b = Board::new();
+        b.set(0, Player::X);
+        b.set(1, Player::O);
+        b.undo();
+        b.undo();
+
+        // Now at initial state, make a different move
+        b.set(4, Player::X);
+        assert_eq!(b.history.len(), 2); // [empty, X at 4]
+        assert_eq!(b.history_index, 1);
+        assert_eq!(b.cells[4], Some(Player::X));
+        assert!(b.can_undo());
+        assert!(!b.can_redo());
+
+        b.undo();
+        assert!(b.cells.iter().all(|c| c.is_none()));
+    }
+
+    #[test]
+    fn test_board_undo_at_boundary() {
+        let mut b = Board::new();
+        assert!(!b.can_undo());
+        assert!(!b.undo());
+
+        b.set(0, Player::X);
+        assert!(b.undo());
+        assert!(!b.undo());
+
+        assert!(b.redo());
+        assert!(!b.redo());
+    }
+
+    #[test]
+    fn test_board_set_rejects_occupied() {
+        let mut b = Board::new();
+        assert!(b.set(0, Player::X));
+        assert!(!b.set(0, Player::O));
+        assert!(!b.set(9, Player::X));
+    }
+
+    #[test]
+    fn test_vs_ai_undo_redo_turn() {
+        let mut gs = GameState {
+            board: Board::new(),
+            current_player: Player::X,
+            mode: GameMode::VsAI,
+            difficulty: Difficulty::Easy,
+            x_wins: 0,
+            o_wins: 0,
+            draws: 0,
+        };
+
+        // Initial state
+        assert_eq!(gs.board.history.len(), 1);
+        assert_eq!(gs.current_player, Player::X);
+
+        // Human plays
+        assert!(gs.make_move(0));
+        assert_eq!(gs.board.cells[0], Some(Player::X));
+        // AI should have played somewhere (easy = random)
+        let occupied_count = gs.board.cells.iter().filter(|c| c.is_some()).count();
+        assert_eq!(occupied_count, 2); // X + O
+        assert_eq!(gs.current_player, Player::X);
+
+        // Undo full turn (AI + human)
+        assert!(gs.undo());
+        let occupied = gs.board.cells.iter().filter(|c| c.is_some()).count();
+        assert_eq!(occupied, 0);
+        assert_eq!(gs.current_player, Player::X);
+
+        // Redo full turn
+        assert!(gs.redo());
+        let occupied = gs.board.cells.iter().filter(|c| c.is_some()).count();
+        assert_eq!(occupied, 2);
+        assert_eq!(gs.current_player, Player::X);
     }
 }
